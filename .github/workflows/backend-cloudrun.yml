@@ -1,0 +1,67 @@
+name: backend-cloudrun
+
+on:
+  push:
+    branches: [ main ]
+    paths: 
+      - "backend/**"
+      - ".github/workflows/backend-cloudrun.yml"
+
+env:
+  SERVICE_NAME: backend
+  REGION: asia-northeast3
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Setup Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ secrets.GCP_ARTIFACT_REGION }}-docker.pkg.dev
+
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_TAG=${{ secrets.GCP_ARTIFACT_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/api/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          
+          docker build \
+            -f backend/Dockerfile \
+            -t $IMAGE_TAG \
+            .
+            
+          docker push $IMAGE_TAG
+          
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --project ${{ secrets.GCP_PROJECT }} \
+            --region ${{ env.REGION }} \
+            --image ${{ env.IMAGE_TAG }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --min-instances 0 \
+            --max-instances 100 \
+            --memory 512Mi \
+            --cpu 1 \
+            --timeout 60 \
+            --concurrency 1000 \
+            --set-env-vars "FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID }},R2_ACCOUNT_ID=${{ secrets.R2_ACCOUNT_ID }},R2_BUCKET_NAME=${{ secrets.R2_BUCKET_NAME }}" \
+            --set-secrets "R2_ACCESS_KEY_ID=R2_ACCESS_KEY_ID:latest,R2_SECRET_ACCESS_KEY=R2_SECRET_ACCESS_KEY:latest"
